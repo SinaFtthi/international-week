@@ -1,5 +1,5 @@
-CREATE DATABASE IF NOT EXISTS pingfin;
-USE pingfin;
+CREATE DATABASE IF NOT EXISTS BankA;
+USE BankA;
 
 CREATE TABLE accounts (
     id VARCHAR(34) PRIMARY KEY,
@@ -125,3 +125,15 @@ INSERT INTO accounts (id, balance) VALUES
 ('BE00111111111111', 5000.00),
 ('BE00222222222222', 5000.00),
 ('BE00333333333333', 5000.00);
+
+INSERT INTO po_new (
+  po_id, po_amount, po_message, po_datetime,
+  ob_id, oa_id, ob_code, bb_id, ba_id
+) VALUES
+('BLUXBEBB_001', 100.00, 'test run dag 2', NOW(), 'BLUXBEBB', 'BE00111111111111', '2000', 'TESTBEBB', 'BE00333333333333'),
+('BLUXBEBB_002', 50.50, 'test run dag 2', NOW(), 'BLUXBEBB', 'BE00222222222222', '2000', 'TESTBEBB', 'BE00444444444444'),
+('BLUXBEBB_003', 250.00, 'test run dag 2', NOW(), 'BLUXBEBB', 'BE00111111111111', '2000', 'TESTBEBB', 'BE00555555555555');
+
+INSERT INTO log (datetime, message, type, po_id)
+VALUES
+(NOW(), 'Database gevuld met testdata', 'general', NULL);
