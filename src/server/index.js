@@ -2,6 +2,13 @@ const express = require('express');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const mysql = require('mysql')
+const db = mysql.createConnection ({
+  user: "pingfinuser",
+  host: "pingfin",
+  password:"pingfinpass",
+  database: "pingfin"
+})
 
 app.use(express.json());
 

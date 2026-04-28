@@ -7,7 +7,8 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "mysql": "^8.0" 
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
