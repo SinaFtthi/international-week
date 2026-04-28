@@ -11,16 +11,17 @@ app.use(express.json());
 // ─────────────────────────────────────────────────────────────
 const BANK_BIC = 'JOUWBIC';
 const BANK_NAME = 'Jullie Bank Naam';
-const TOKEN = 'jouw_token';       // ← jullie token, geef dit aan de CB
+const TOKEN = 'Pingfin9';       // ← jullie token, geef dit aan de CB
 const CB_TOKEN = 'token_van_cb';     // ← krijg je van de CB
 
 // ─────────────────────────────────────────────────────────────
 // DATABASE  (zelfde gegevens als jullie originele code)
 // ─────────────────────────────────────────────────────────────
 const db = mysql.createPool({
-  host: 'pingfin',
-  user: 'pingfinuser',
-  password: 'pingfinpass',
+  host: 'localhost',
+  port: 3307,
+  user: 'root',
+  password: 'root',
   database: 'pingfin',
   waitForConnections: true,
 });
@@ -74,8 +75,7 @@ app.get('/', (req, res) => {
   res.json({ message: 'PingFin server is running!' });
 });
 
-<<<<<<< Updated upstream
-=======
+
 // ─────────────────────────────────────────────────────────────
 // PUBLIC ENDPOINTS (verplicht door PingFin)
 // ─────────────────────────────────────────────────────────────
@@ -370,7 +370,6 @@ app.get('/api/logs/', auth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────────────────────
->>>>>>> Stashed changes
 app.listen(PORT, () => {
   console.log(`✅ PingFin draait op http://localhost:${PORT}`);
   console.log(`   BIC: ${BANK_BIC}`);
