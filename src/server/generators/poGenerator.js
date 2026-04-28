@@ -13,7 +13,7 @@ function generatePo(bankBic, beneficiaryBankBic) {
     po_message: "Test run generated PO",
     po_datetime: getCurrentDateTime(),
     ob_id: bankBic,
-    oa_id: "BE111",
+    oa_id: "BE00111111111111",
     ob_code: "2000",
     ob_datetime: getCurrentDateTime(),
     bb_id: beneficiaryBankBic,
