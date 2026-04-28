@@ -1,6 +1,6 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
-const { generatePo } = require('./src/generators/poGenerator');
+const { generatePo } = require('./generators/poGenerator.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
