@@ -1,5 +1,6 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
+const { generatePo } = require('./src/generators/poGenerator');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,8 +10,8 @@ app.use(express.json());
 // ─────────────────────────────────────────────────────────────
 // CONFIG  ← pas dit aan
 // ─────────────────────────────────────────────────────────────
-const BANK_BIC = 'JOUWBIC';
-const BANK_NAME = 'Jullie Bank Naam';
+const BANK_BIC = 'BKCHBEBB';
+const BANK_NAME = 'BestBank';
 const TOKEN = 'Pingfin9';       // ← jullie token, geef dit aan de CB
 const CB_TOKEN = 'token_van_cb';     // ← krijg je van de CB
 
@@ -108,12 +109,33 @@ app.get('/api/accounts/', auth, async (req, res) => {
   }
 });
 
+//STAP 0 GENERATE RANDOM PO//
+
+app.get('/api/po_new_generate/', auth, (req, res) => {
+  try {
+    // hoeveel PO’s genereren (default = 3)
+    const count = parseInt(req.query.count) || 3;
+
+    const pos = [];
+
+    for (let i = 0; i < count; i++) {
+      const po = generatePo(BANK_BIC, "BBRUBEBB"); // ← later dynamisch maken
+      pos.push(po);
+    }
+
+    ok(res, pos, `${pos.length} POs generated`);
+  } catch (err) {
+    fail(res, err.message, 5000, 500);
+  }
+});
+
+
 // ─────────────────────────────────────────────────────────────
 // STAP 1 — POST /api/po_new/
 // Nieuwe PO aanmaken → INSERT in po_new
 // Let op: po_new heeft GEEN ob_datetime kolom!
 // ─────────────────────────────────────────────────────────────
-app.post('/api/po_new/', auth, async (req, res) => {
+app.post('/api/po_new_add/', auth, async (req, res) => {
   const pos = req.body?.data;
   if (!Array.isArray(pos) || pos.length === 0) {
     return fail(res, 'Body moet { data: [...POs] } zijn', 4020);
