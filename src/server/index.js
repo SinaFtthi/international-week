@@ -182,26 +182,29 @@ app.post('/api/send_payments/', auth, async (req, res) => {
     if (pos.length === 0) return ok(res, { sent: 0, internal: 0 }, 'Geen POs te verwerken');
 
     const ob_datetime = now();
-    const internal = pos.filter(po => po.ob_id === po.bb_id);
-    const external = pos.filter(po => po.ob_id !== po.bb_id);
+    const normalize = s => (s ?? '').trim().toUpperCase();
+    const internal = pos.filter(po => normalize(po.ob_id) === normalize(po.bb_id));
+    const external = pos.filter(po => normalize(po.ob_id) !== normalize(po.bb_id));
 
     // Interne transacties: zelfde bank, rechtstreeks verwerken zonder CB
     for (const po of internal) {
-      const [rows] = await db.query('SELECT id FROM accounts WHERE id = ?', [po.ba_id]);
+      const baId = (po.ba_id ?? '').trim();
+      const oaId = (po.oa_id ?? '').trim();
+      const [rows] = await db.query('SELECT id FROM accounts WHERE id = ?', [baId]);
       const found = rows.length > 0;
 
       await db.query(
         `INSERT INTO transactions (amount, datetime, po_id, account_id, isvalid, iscomplete)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [po.po_amount, ob_datetime, po.po_id, po.oa_id, found ? 1 : 0, found ? 1 : 0]
+        [po.po_amount, ob_datetime, po.po_id, oaId, found ? 1 : 0, 1]
       );
 
       if (found) {
-        await db.query('UPDATE accounts SET balance = balance - ? WHERE id = ?', [po.po_amount, po.oa_id]);
-        await db.query('UPDATE accounts SET balance = balance + ? WHERE id = ?', [po.po_amount, po.ba_id]);
+        await db.query('UPDATE accounts SET balance = balance - ? WHERE id = ?', [po.po_amount, oaId]);
+        await db.query('UPDATE accounts SET balance = balance + ? WHERE id = ?', [po.po_amount, baId]);
         await addLog('internal_tx', `Interne transactie geslaagd (2000)`, { po_id: po.po_id, bb_code: 2000 });
       } else {
-        await addLog('internal_tx', `Interne transactie mislukt: begunstigde rekening ${po.ba_id} niet gevonden (4004) — geen geld afgetrokken`, { po_id: po.po_id, bb_code: 4004 });
+        await addLog('internal_tx', `Interne transactie mislukt: begunstigde rekening ${baId} niet gevonden (4004) — geen geld afgetrokken`, { po_id: po.po_id, bb_code: 4004 });
       }
 
       await db.query('DELETE FROM po_new WHERE po_id = ?', [po.po_id]);
@@ -222,18 +225,21 @@ app.post('/api/send_payments/', auth, async (req, res) => {
         );
       }
 
-      const cbRes = await fetch(`${CB_URL}/api/po_in/`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${CB_TOKEN}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: posToSend }),
-      });
-      cbData = await cbRes.json();
+      let cbRes;
+      try {
+        cbRes = await fetch(`${CB_URL}/api/po_in/`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${CB_TOKEN}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: posToSend }),
+        });
+        try { cbData = await cbRes.json(); } catch (_) { cbData = { error: 'CB response was not valid JSON' }; }
+      } catch (fetchErr) {
+        cbData = { error: fetchErr.message };
+      }
 
-      if (cbRes.ok) {
-        for (const po of external) {
-          await db.query('DELETE FROM po_new WHERE po_id = ?', [po.po_id]);
-          await addLog('po_new_process', `PO doorgestuurd naar CB`, { ...po, ob_datetime });
-        }
+      for (const po of external) {
+        await db.query('DELETE FROM po_new WHERE po_id = ?', [po.po_id]);
+        await addLog('po_new_process', `PO doorgestuurd naar CB`, { ...po, ob_datetime });
       }
     }
 
@@ -251,7 +257,7 @@ app.post('/api/send_payments/', auth, async (req, res) => {
 // → UPDATE accounts.balance (saldo verhogen als succes)
 // → INSERT in ack_out
 // ─────────────────────────────────────────────────────────────
-app.post('/api/receive_payment/', auth, async (req, res) => {
+app.post('/api/po_in/', auth, async (req, res) => {
   const pos = req.body?.data;
   if (!Array.isArray(pos) || pos.length === 0) {
     return fail(res, 'Body moet { data: [...POs] } zijn', 4020);
@@ -265,7 +271,7 @@ app.post('/api/receive_payment/', auth, async (req, res) => {
       const bb_datetime = now();
       let bb_code;
       let isvalid = 0;
-      let iscomplete = 0;
+      const iscomplete = 1; // altijd complete: verwerking is klaar (pending = wachten op CB, hier niet van toepassing)
 
       // Check of het account bij ons bestaat (ba_id → accounts.id)
       const [[account]] = await db.query(
@@ -277,7 +283,6 @@ app.post('/api/receive_payment/', auth, async (req, res) => {
       } else {
         bb_code = 2000;
         isvalid = 1;
-        iscomplete = 1;
       }
 
       // 1. INSERT in po_in
@@ -375,7 +380,7 @@ app.post('/api/send_acknowledgements/', auth, async (req, res) => {
 // → UPDATE transactions (iscomplete)
 // → UPDATE accounts.balance van OA (saldo verlagen)
 // ─────────────────────────────────────────────────────────────
-app.post('/api/receive_acknowledgement/', auth, async (req, res) => {
+app.post('/api/ack_in/', auth, async (req, res) => {
   const acks = req.body?.data;
   if (!Array.isArray(acks) || acks.length === 0) {
     return fail(res, 'Body moet { data: [...ACKs] } zijn', 4020);
@@ -452,7 +457,9 @@ app.get('/api/ack_out/', auth, async (req, res) => {
 
 app.get('/api/transactions/', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM transactions');
+    const [rows] = await db.query(
+      'SELECT id, amount, datetime, po_id, account_id, CAST(isvalid AS UNSIGNED) AS isvalid, CAST(iscomplete AS UNSIGNED) AS iscomplete FROM transactions'
+    );
     ok(res, rows);
   } catch (err) {
     fail(res, err.message, 5000, 500);

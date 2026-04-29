@@ -29,7 +29,7 @@ export const api = {
 
   createPayment:          (pos) => post('/api/create_payment/',          { data: pos }),
   sendPayments:           ()    => post('/api/send_payments/',            {}),
-  receivePayment:         (pos) => post('/api/receive_payment/',          { data: pos }),
+  receivePayment:         (pos) => post('/api/po_in/',                   { data: pos }),
   sendAcknowledgements:   ()    => post('/api/send_acknowledgements/',    {}),
-  receiveAcknowledgement: (acks)=> post('/api/receive_acknowledgement/',  { data: acks }),
+  receiveAcknowledgement: (acks)=> post('/api/ack_in/',                  { data: acks }),
 };
