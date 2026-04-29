@@ -9,10 +9,11 @@ app.use(express.json());
 // ─────────────────────────────────────────────────────────────
 // CONFIG  ← pas dit aan
 // ─────────────────────────────────────────────────────────────
-const BANK_BIC = 'JOUWBIC';
+const BANK_BIC  = 'JOUWBIC';
 const BANK_NAME = 'Jullie Bank Naam';
-const TOKEN = 'Pingfin9';       // ← jullie token, geef dit aan de CB
-const CB_TOKEN = 'token_van_cb';     // ← krijg je van de CB
+const TOKEN     = 'Pingfin9';                              // ← jullie token, geef dit aan de CB
+const CB_TOKEN  = 'token_van_cb';                          // ← krijg je van de CB
+const CB_URL    = 'https://stevenop.be/pingfin/api/v2';   // ← verander naar echte CB URL
 
 // ─────────────────────────────────────────────────────────────
 // DATABASE  (zelfde gegevens als jullie originele code)
@@ -85,11 +86,11 @@ app.get('/api/help/', (req, res) => {
       { url: '/api/help/', method: 'GET', auth: false },
       { url: '/api/info/', method: 'GET', auth: false },
       { url: '/api/accounts/', method: 'GET', auth: true },
-      { url: '/api/po_new/', method: 'POST', auth: true },
-      { url: '/api/po_out/', method: 'GET', auth: true },
-      { url: '/api/po_in/', method: 'POST', auth: true },
-      { url: '/api/ack_out/', method: 'GET', auth: true },
-      { url: '/api/ack_in/', method: 'POST', auth: true },
+      { url: '/api/create_payment/', method: 'POST', auth: true },
+      { url: '/api/send_payments/', method: 'POST', auth: true },
+      { url: '/api/receive_payment/', method: 'POST', auth: true },
+      { url: '/api/send_acknowledgements/', method: 'POST', auth: true },
+      { url: '/api/receive_acknowledgement/', method: 'POST', auth: true },
     ]
   });
 });
@@ -109,11 +110,11 @@ app.get('/api/accounts/', auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// STAP 1 — POST /api/po_new/
+// STAP 1 — POST /api/create_payment/
 // Nieuwe PO aanmaken → INSERT in po_new
 // Let op: po_new heeft GEEN ob_datetime kolom!
 // ─────────────────────────────────────────────────────────────
-app.post('/api/po_new/', auth, async (req, res) => {
+app.post('/api/create_payment/', auth, async (req, res) => {
   const pos = req.body?.data;
   if (!Array.isArray(pos) || pos.length === 0) {
     return fail(res, 'Body moet { data: [...POs] } zijn', 4020);
@@ -172,27 +173,85 @@ app.post('/api/po_new/', auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// STAP 2 — GET /api/po_out/
-// CB leest wat er in po_out staat
+// STAP 2 — POST /api/send_payments/
+// Verplaats POs van po_new naar po_out en stuur ze naar de CB
 // ─────────────────────────────────────────────────────────────
-app.get('/api/po_out/', auth, async (req, res) => {
+app.post('/api/send_payments/', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM po_out');
-    ok(res, rows);
+    const [pos] = await db.query('SELECT * FROM po_new');
+    if (pos.length === 0) return ok(res, { sent: 0, internal: 0 }, 'Geen POs te verwerken');
+
+    const ob_datetime = now();
+    const internal = pos.filter(po => po.ob_id === po.bb_id);
+    const external = pos.filter(po => po.ob_id !== po.bb_id);
+
+    // Interne transacties: zelfde bank, rechtstreeks verwerken zonder CB
+    for (const po of internal) {
+      const [rows] = await db.query('SELECT id FROM accounts WHERE id = ?', [po.ba_id]);
+      const found = rows.length > 0;
+
+      await db.query(
+        `INSERT INTO transactions (amount, datetime, po_id, account_id, isvalid, iscomplete)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [po.po_amount, ob_datetime, po.po_id, po.oa_id, found ? 1 : 0, found ? 1 : 0]
+      );
+
+      if (found) {
+        await db.query('UPDATE accounts SET balance = balance - ? WHERE id = ?', [po.po_amount, po.oa_id]);
+        await db.query('UPDATE accounts SET balance = balance + ? WHERE id = ?', [po.po_amount, po.ba_id]);
+        await addLog('internal_tx', `Interne transactie geslaagd (2000)`, { po_id: po.po_id, bb_code: 2000 });
+      } else {
+        await addLog('internal_tx', `Interne transactie mislukt: begunstigde rekening ${po.ba_id} niet gevonden (4004) — geen geld afgetrokken`, { po_id: po.po_id, bb_code: 4004 });
+      }
+
+      await db.query('DELETE FROM po_new WHERE po_id = ?', [po.po_id]);
+    }
+
+    // Externe transacties: via CB
+    let cbData = null;
+    if (external.length > 0) {
+      const posToSend = external.map(po => ({ ...po, ob_datetime }));
+
+      for (const po of posToSend) {
+        await db.query(
+          `INSERT IGNORE INTO po_out
+            (po_id, po_amount, po_message, po_datetime, ob_id, oa_id, ob_code, ob_datetime, bb_id, ba_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [po.po_id, po.po_amount, po.po_message ?? null, po.po_datetime ?? null,
+           po.ob_id, po.oa_id, po.ob_code, ob_datetime, po.bb_id, po.ba_id]
+        );
+      }
+
+      const cbRes = await fetch(`${CB_URL}/api/po_in/`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${CB_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: posToSend }),
+      });
+      cbData = await cbRes.json();
+
+      if (cbRes.ok) {
+        for (const po of external) {
+          await db.query('DELETE FROM po_new WHERE po_id = ?', [po.po_id]);
+          await addLog('po_new_process', `PO doorgestuurd naar CB`, { ...po, ob_datetime });
+        }
+      }
+    }
+
+    ok(res, { sent: external.length, internal: internal.length, cb_response: cbData });
   } catch (err) {
     fail(res, err.message, 5000, 500);
   }
 });
 
 // ─────────────────────────────────────────────────────────────
-// STAP 3 — POST /api/po_in/
+// STAP 3 — POST /api/receive_payment/
 // CB stuurt verwerkte POs naar ons (wij zijn de BB)
 // → INSERT in po_in
 // → INSERT in transactions (isvalid + iscomplete als bit)
 // → UPDATE accounts.balance (saldo verhogen als succes)
-// → INSERT in ack_out (zodat CB dat kan ophalen)
+// → INSERT in ack_out
 // ─────────────────────────────────────────────────────────────
-app.post('/api/po_in/', auth, async (req, res) => {
+app.post('/api/receive_payment/', auth, async (req, res) => {
   const pos = req.body?.data;
   if (!Array.isArray(pos) || pos.length === 0) {
     return fail(res, 'Body moet { data: [...POs] } zijn', 4020);
@@ -276,26 +335,47 @@ app.post('/api/po_in/', auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// STAP 4 — GET /api/ack_out/
-// CB luistert hiernaar om te zien welke ACKs wij hebben klaarstaan
+// STAP 4 — POST /api/send_acknowledgements/
+// Stuur onbevestigde ACKs uit ack_out naar de CB
 // ─────────────────────────────────────────────────────────────
-app.get('/api/ack_out/', auth, async (req, res) => {
+app.post('/api/send_acknowledgements/', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM ack_out');
-    ok(res, rows);
+    // Alleen ACKs die nog niet bevestigd zijn door CB (niet teruggekomen via ack_in)
+    const [acks] = await db.query(`
+      SELECT a.* FROM ack_out a
+      LEFT JOIN ack_in ai ON a.po_id = ai.po_id
+      WHERE ai.po_id IS NULL
+    `);
+    if (acks.length === 0) return ok(res, { sent: 0 }, 'Geen ACKs te verwerken');
+
+    // POST naar CB
+    const cbRes = await fetch(`${CB_URL}/api/ack_in/`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${CB_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: acks }),
+    });
+    const cbData = await cbRes.json();
+
+    if (cbRes.ok) {
+      for (const ack of acks) {
+        await addLog('ack_out_process', `ACK doorgestuurd naar CB`, ack);
+      }
+    }
+
+    ok(res, { sent: acks.length, cb_response: cbData });
   } catch (err) {
     fail(res, err.message, 5000, 500);
   }
 });
 
 // ─────────────────────────────────────────────────────────────
-// STAP 5 — POST /api/ack_in/
+// STAP 5 — POST /api/receive_acknowledgement/
 // CB stuurt bevestigde ACKs terug naar ons (wij zijn de OB)
 // → INSERT in ack_in
 // → UPDATE transactions (iscomplete)
 // → UPDATE accounts.balance van OA (saldo verlagen)
 // ─────────────────────────────────────────────────────────────
-app.post('/api/ack_in/', auth, async (req, res) => {
+app.post('/api/receive_acknowledgement/', auth, async (req, res) => {
   const acks = req.body?.data;
   if (!Array.isArray(acks) || acks.length === 0) {
     return fail(res, 'Body moet { data: [...ACKs] } zijn', 4020);
@@ -347,8 +427,29 @@ app.post('/api/ack_in/', auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// EXTRA
+// EXTRA — GUI read endpoints
 // ─────────────────────────────────────────────────────────────
+app.get('/api/po_new/', auth, async (req, res) => {
+  try { const [r] = await db.query('SELECT * FROM po_new'); ok(res, r); }
+  catch (err) { fail(res, err.message, 5000, 500); }
+});
+app.get('/api/po_out/', auth, async (req, res) => {
+  try { const [r] = await db.query('SELECT * FROM po_out ORDER BY ob_datetime DESC'); ok(res, r); }
+  catch (err) { fail(res, err.message, 5000, 500); }
+});
+app.get('/api/po_in/', auth, async (req, res) => {
+  try { const [r] = await db.query('SELECT * FROM po_in ORDER BY cb_datetime DESC'); ok(res, r); }
+  catch (err) { fail(res, err.message, 5000, 500); }
+});
+app.get('/api/ack_in/', auth, async (req, res) => {
+  try { const [r] = await db.query('SELECT * FROM ack_in'); ok(res, r); }
+  catch (err) { fail(res, err.message, 5000, 500); }
+});
+app.get('/api/ack_out/', auth, async (req, res) => {
+  try { const [r] = await db.query('SELECT * FROM ack_out'); ok(res, r); }
+  catch (err) { fail(res, err.message, 5000, 500); }
+});
+
 app.get('/api/transactions/', auth, async (req, res) => {
   try {
     const [rows] = await db.query('SELECT * FROM transactions');
