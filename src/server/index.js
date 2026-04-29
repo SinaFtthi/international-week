@@ -9,10 +9,10 @@ app.use(express.json());
 // ─────────────────────────────────────────────────────────────
 // CONFIG  ← pas dit aan
 // ─────────────────────────────────────────────────────────────
-const BANK_BIC  = 'JOUWBIC';
+const BANK_BIC = 'BIBLBE21';
 const BANK_NAME = 'Jullie Bank Naam';
 const TOKEN     = 'Pingfin9';                              // ← jullie token, geef dit aan de CB
-const CB_TOKEN  = 'token_van_cb';                          // ← krijg je van de CB
+const CB_TOKEN = 'tUkZrULMFR60e3WkEmqfYHyUSlpcpMoi';                          // ← krijg je van de CB
 const CB_URL    = 'https://stevenop.be/pingfin/api/v2';   // ← verander naar echte CB URL
 
 // ─────────────────────────────────────────────────────────────
@@ -223,11 +223,18 @@ app.post('/api/send_payments/', auth, async (req, res) => {
           [po.po_id, po.po_amount, po.po_message ?? null, po.po_datetime ?? null,
            po.ob_id, po.oa_id, po.ob_code, ob_datetime, po.bb_id, po.ba_id]
         );
+        // Maak een transactie-rij aan (iscomplete=0) zodat de ACK die later binnenkomt
+        // deze rij kan updaten naar iscomplete=1
+        await db.query(
+          `INSERT IGNORE INTO transactions (amount, datetime, po_id, account_id, isvalid, iscomplete)
+           VALUES (?, ?, ?, ?, 1, 0)`,
+          [po.po_amount, ob_datetime, po.po_id, po.oa_id]
+        );
       }
 
       let cbRes;
       try {
-        cbRes = await fetch(`${CB_URL}/api/po_in/`, {
+        cbRes = await fetch(`${CB_URL}/po_in`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${CB_TOKEN}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ data: posToSend }),
@@ -244,6 +251,116 @@ app.post('/api/send_payments/', auth, async (req, res) => {
     }
 
     ok(res, { sent: external.length, internal: internal.length, cb_response: cbData });
+  } catch (err) {
+    fail(res, err.message, 5000, 500);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// STAP 2b — POST /api/poll_cb/
+// Haal inkomende POs op bij de CB (GET CB/po_out/) en verwerk ze lokaal
+// ─────────────────────────────────────────────────────────────
+app.post('/api/poll_cb/', auth, async (req, res) => {
+  const url = `${CB_URL}/po_out`;
+  console.log(`\n📡 [POLL CB] GET ${url}`);
+  console.log(`   Token: Bearer ${CB_TOKEN}`);
+
+  try {
+    let cbData;
+    let cbStatus;
+    try {
+      const cbRes = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${CB_TOKEN}` },
+      });
+      cbStatus = cbRes.status;
+      console.log(`   HTTP status: ${cbStatus}`);
+
+      const rawText = await cbRes.text();
+      console.log(`   Raw response (eerste 400 tekens):\n   ${rawText.slice(0, 400)}`);
+
+      try {
+        cbData = JSON.parse(rawText);
+        console.log(`   ✅ JSON geparsed`);
+      } catch (_) {
+        console.error(`   ❌ Geen geldige JSON!`);
+        return fail(res, `CB antwoord geen JSON (HTTP ${cbStatus}): ${rawText.slice(0, 150)}`, 5001, 502);
+      }
+    } catch (fetchErr) {
+      console.error(`   ❌ Fetch mislukt: ${fetchErr.message}`);
+      return fail(res, `CB niet bereikbaar: ${fetchErr.message}`, 5002, 502);
+    }
+
+    const pos = cbData?.data ?? cbData;
+    console.log(`   Data type: ${Array.isArray(pos) ? `array (${pos.length} items)` : typeof pos}`);
+
+    if (!Array.isArray(pos) || pos.length === 0) {
+      console.log(`   ℹ️  Geen POs beschikbaar`);
+      return ok(res, { received: 0 }, 'Geen POs beschikbaar bij de CB');
+    }
+
+    console.log(`   📥 ${pos.length} PO(s) ontvangen, verwerken...`);
+    const processed = [];
+    const errors = [];
+
+    for (const po of pos) {
+      console.log(`   → PO ${po.po_id} | €${po.po_amount} | van ${po.ob_id} naar ${po.bb_id} | ba_id=${po.ba_id}`);
+      try {
+        const bb_datetime = now();
+        const [[account]] = await db.query('SELECT id FROM accounts WHERE id = ?', [po.ba_id]);
+        const bb_code = account ? 2000 : 4004;
+        const isvalid = account ? 1 : 0;
+        console.log(`     Account ${po.ba_id}: ${account ? '✅ gevonden' : '❌ niet gevonden'} → bb_code=${bb_code}`);
+
+        await db.query(
+          `INSERT IGNORE INTO po_in
+            (po_id, po_amount, po_message, po_datetime,
+             ob_id, oa_id, ob_code, ob_datetime,
+             cb_code, cb_datetime,
+             bb_id, ba_id, bb_code, bb_datetime)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [po.po_id, po.po_amount, po.po_message ?? null, po.po_datetime ?? null,
+           po.ob_id ?? null, po.oa_id ?? null, po.ob_code ?? null, po.ob_datetime ?? null,
+           po.cb_code ?? null, po.cb_datetime ?? null,
+           po.bb_id ?? BANK_BIC, po.ba_id, bb_code, bb_datetime]
+        );
+
+        await db.query(
+          `INSERT INTO transactions (amount, datetime, po_id, account_id, isvalid, iscomplete)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [po.po_amount, now(), po.po_id, bb_code === 2000 ? po.ba_id : null, isvalid, 1]
+        );
+
+        if (bb_code === 2000) {
+          await db.query('UPDATE accounts SET balance = balance + ? WHERE id = ?', [po.po_amount, po.ba_id]);
+          console.log(`     💰 Saldo van ${po.ba_id} verhoogd met €${po.po_amount}`);
+        }
+
+        await db.query(
+          `INSERT IGNORE INTO ack_out
+            (po_id, po_amount, po_message, po_datetime,
+             ob_id, oa_id, ob_code, ob_datetime,
+             cb_code, cb_datetime,
+             bb_id, ba_id, bb_code, bb_datetime)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [po.po_id, po.po_amount, po.po_message ?? null, po.po_datetime ?? null,
+           po.ob_id ?? null, po.oa_id ?? null, po.ob_code ?? null, po.ob_datetime ?? null,
+           po.cb_code ?? null, po.cb_datetime ?? null,
+           po.bb_id ?? BANK_BIC, po.ba_id, bb_code, bb_datetime]
+        );
+
+        // PO verwerkt → verwijder uit po_in (staat nu als transactie + ack_out)
+        await db.query('DELETE FROM po_in WHERE po_id = ?', [po.po_id]);
+
+        await addLog('poll_cb', `PO ontvangen via poll, bb_code=${bb_code}`, { ...po, bb_code, bb_datetime });
+        processed.push(po.po_id);
+        console.log(`     ✅ Verwerkt, po_in opgeruimd`);
+      } catch (err) {
+        console.error(`     ❌ Fout bij verwerken: ${err.message}`);
+        errors.push({ po_id: po.po_id, error: err.message });
+      }
+    }
+
+    ok(res, { received: processed.length, errors });
   } catch (err) {
     fail(res, err.message, 5000, 500);
   }
@@ -299,12 +416,12 @@ app.post('/api/po_in/', auth, async (req, res) => {
         po.bb_id ?? BANK_BIC, po.ba_id, bb_code, bb_datetime]
       );
 
-      // 2. INSERT in transactions
-      //    isvalid en iscomplete zijn BIT(1) in de DB → 0 of 1
+
+      // 2. INSERT in transactions (account_id = NULL als ba_id niet bestaat, FK staat NULL toe)
       await db.query(
         `INSERT INTO transactions (amount, datetime, po_id, account_id, isvalid, iscomplete)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [po.po_amount, now(), po.po_id, po.ba_id, isvalid, iscomplete]
+        [po.po_amount, now(), po.po_id, bb_code === 2000 ? po.ba_id : null, isvalid, iscomplete]
       );
 
       // 3. UPDATE accounts saldo (alleen als succes)
@@ -354,7 +471,7 @@ app.post('/api/send_acknowledgements/', auth, async (req, res) => {
     if (acks.length === 0) return ok(res, { sent: 0 }, 'Geen ACKs te verwerken');
 
     // POST naar CB
-    const cbRes = await fetch(`${CB_URL}/api/ack_in/`, {
+    const cbRes = await fetch(`${CB_URL}/ack_in`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${CB_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: acks }),
@@ -368,6 +485,86 @@ app.post('/api/send_acknowledgements/', auth, async (req, res) => {
     }
 
     ok(res, { sent: acks.length, cb_response: cbData });
+  } catch (err) {
+    fail(res, err.message, 5000, 500);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// STAP 4b — POST /api/poll_cb_acks/
+// Haal inkomende ACKs op bij de CB (GET CB/ack_out) en verwerk ze lokaal
+// ─────────────────────────────────────────────────────────────
+app.post('/api/poll_cb_acks/', auth, async (req, res) => {
+  const url = `${CB_URL}/ack_out`;
+  console.log(`\n📡 [POLL CB ACKS] GET ${url}`);
+  try {
+    let cbData;
+    try {
+      const cbRes = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${CB_TOKEN}` },
+      });
+      console.log(`   HTTP status: ${cbRes.status}`);
+      const rawText = await cbRes.text();
+      console.log(`   Raw response:\n   ${rawText.slice(0, 300)}`);
+      try { cbData = JSON.parse(rawText); }
+      catch (_) { return fail(res, `CB antwoord geen JSON (HTTP ${cbRes.status}): ${rawText.slice(0, 150)}`, 5001, 502); }
+    } catch (fetchErr) {
+      return fail(res, `CB niet bereikbaar: ${fetchErr.message}`, 5002, 502);
+    }
+
+    const acks = cbData?.data ?? cbData;
+    console.log(`   ACKs: ${Array.isArray(acks) ? acks.length : 'geen array'}`);
+    if (!Array.isArray(acks) || acks.length === 0) {
+      return ok(res, { received: 0 }, 'Geen ACKs beschikbaar bij de CB');
+    }
+
+    const processed = [];
+    const errors = [];
+
+    for (const ack of acks) {
+      console.log(`   → ACK ${ack.po_id} | bb_code=${ack.bb_code} | oa_id=${ack.oa_id}`);
+      try {
+        const success = String(ack.bb_code) === '2000';
+
+        await db.query(
+          `INSERT IGNORE INTO ack_in
+            (po_id, po_amount, po_message, po_datetime,
+             ob_id, oa_id, ob_code, ob_datetime,
+             cb_code, cb_datetime,
+             bb_id, ba_id, bb_code, bb_datetime)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [ack.po_id, ack.po_amount, ack.po_message ?? null, ack.po_datetime ?? null,
+           ack.ob_id ?? null, ack.oa_id ?? null, ack.ob_code ?? null, ack.ob_datetime ?? null,
+           ack.cb_code ?? null, ack.cb_datetime ?? null,
+           ack.bb_id ?? null, ack.ba_id ?? null, ack.bb_code ?? null, ack.bb_datetime ?? null]
+        );
+
+        await db.query(
+          'UPDATE transactions SET iscomplete = ? WHERE po_id = ?',
+          [success ? 1 : 0, ack.po_id]
+        );
+
+        if (success && ack.oa_id) {
+          await db.query(
+            'UPDATE accounts SET balance = balance - ? WHERE id = ?',
+            [ack.po_amount, ack.oa_id]
+          );
+          console.log(`     💸 Saldo van ${ack.oa_id} verlaagd met €${ack.po_amount}`);
+        }
+
+        // ACK verwerkt → verwijder uit ack_in (staat nu als transactie)
+        await db.query('DELETE FROM ack_in WHERE po_id = ?', [ack.po_id]);
+
+        await addLog('poll_cb_acks', `ACK ontvangen via poll, bb_code=${ack.bb_code}`, ack);
+        processed.push(ack.po_id);
+        console.log(`     ✅ Verwerkt, ack_in opgeruimd`);
+      } catch (err) {
+        console.error(`     ❌ Fout: ${err.message}`);
+        errors.push({ po_id: ack.po_id, error: err.message });
+      }
+    }
+
+    ok(res, { received: processed.length, errors });
   } catch (err) {
     fail(res, err.message, 5000, 500);
   }
@@ -457,9 +654,21 @@ app.get('/api/ack_out/', auth, async (req, res) => {
 
 app.get('/api/transactions/', auth, async (req, res) => {
   try {
-    const [rows] = await db.query(
-      'SELECT id, amount, datetime, po_id, account_id, CAST(isvalid AS UNSIGNED) AS isvalid, CAST(iscomplete AS UNSIGNED) AS iscomplete FROM transactions'
-    );
+    const [rows] = await db.query(`
+      SELECT
+        t.id, t.amount, t.datetime, t.po_id, t.account_id,
+        CAST(t.isvalid AS UNSIGNED)    AS isvalid,
+        CAST(t.iscomplete AS UNSIGNED) AS iscomplete,
+        COALESCE(po.ob_id, pi.ob_id)         AS ob_id,
+        COALESCE(po.oa_id, pi.oa_id)         AS oa_id,
+        COALESCE(po.bb_id, pi.bb_id)         AS bb_id,
+        COALESCE(po.ba_id, pi.ba_id)         AS ba_id,
+        COALESCE(po.po_message, pi.po_message) AS po_message
+      FROM transactions t
+      LEFT JOIN po_out po ON po.po_id = t.po_id
+      LEFT JOIN po_in  pi ON pi.po_id = t.po_id
+      ORDER BY t.id DESC
+    `);
     ok(res, rows);
   } catch (err) {
     fail(res, err.message, 5000, 500);

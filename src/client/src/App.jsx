@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from './lib/api';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
@@ -9,6 +9,7 @@ import { Acknowledgements } from './pages/Acknowledgements';
 import { Transactions } from './pages/Transactions';
 import { Log } from './pages/Log';
 import { PoDrawer } from './drawers/PoDrawer';
+import { TxDrawer } from './drawers/TxDrawer';
 import { NewPoModal } from './drawers/NewPoModal';
 
 function useToasts() {
@@ -22,19 +23,26 @@ function useToasts() {
 }
 
 export default function App() {
-  const [route, setRoute]       = useState('dashboard');
-  const [bankInfo, setBankInfo] = useState(null);
-  const [accounts, setAccounts] = useState([]);
-  const [poNew, setPoNew]       = useState([]);
-  const [poOut, setPoOut]       = useState([]);
-  const [poIn, setPoIn]         = useState([]);
-  const [ackIn, setAckIn]       = useState([]);
-  const [ackOut, setAckOut]     = useState([]);
-  const [txs, setTxs]           = useState([]);
-  const [logs, setLogs]         = useState([]);
-  const [openPo, setOpenPo]     = useState(null);
-  const [showNew, setShowNew]   = useState(false);
+  const [route, setRoute]           = useState('dashboard');
+  const [bankInfo, setBankInfo]     = useState(null);
+  const [accounts, setAccounts]     = useState([]);
+  const [poNew, setPoNew]           = useState([]);
+  const [poOut, setPoOut]           = useState([]);
+  const [poIn, setPoIn]             = useState([]);
+  const [ackIn, setAckIn]           = useState([]);
+  const [ackOut, setAckOut]         = useState([]);
+  const [txs, setTxs]               = useState([]);
+  const [logs, setLogs]             = useState([]);
+  const [openPo, setOpenPo]         = useState(null);
+  const [openTx, setOpenTx]         = useState(null);
+  const [showNew, setShowNew]       = useState(false);
+  const [busy, setBusy]             = useState(false);
+  const [autoLastRun, setAutoLastRun] = useState(null);
+  const busyRef                     = useRef(false);
   const { push, items: toastItems } = useToasts();
+
+  // Sync busyRef with busy state so interval closure always sees latest value
+  const setAllBusy = (v) => { busyRef.current = v; setBusy(v); };
 
   const refresh = useCallback(async () => {
     try {
@@ -56,11 +64,49 @@ export default function App() {
     } catch (_) { /* ignore */ }
   }, []);
 
+  // Data refresh every 5 s
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, 5000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // ── Auto-processing cycle (every 15 s) ──────────────────────
+  // Volgorde: poll inkomende POs → stuur ACKs → poll ACKs → verwerk PO_NEW
+  useEffect(() => {
+    const run = async () => {
+      if (busyRef.current) return; // skip als er al iets bezig is
+      busyRef.current = true;
+      setBusy(true);
+      try {
+        await api.pollCb();
+        await api.sendAcknowledgements();
+        await api.pollCbAcks();
+        await api.sendPayments(); // doet niks als PO_NEW leeg is
+        setAutoLastRun(new Date());
+        refresh();
+      } catch (_) { /* silent */ }
+      finally { busyRef.current = false; setBusy(false); }
+    };
+    const id = setInterval(run, 15000);
+    return () => clearInterval(id);
+  }, [refresh]); // refresh is stabiel (useCallback met [] deps)
+
+  // ── Handmatige handlers voor PaymentOrders pagina ───────────
+  const handlePollCb = async () => {
+    if (busyRef.current) return;
+    setAllBusy(true);
+    try {
+      const res = await api.pollCb();
+      if (res?.ok) {
+        const n = res.data?.received ?? 0;
+        push(n > 0 ? `${n} POs ontvangen van CB` : 'Geen nieuwe POs bij CB', 'ok');
+        if (n > 0) refresh();
+      } else {
+        push(res?.message ?? 'Fout bij pollen CB', 'err');
+      }
+    } finally { setAllBusy(false); }
+  };
 
   const handleCreate = async (po) => {
     const res = await api.createPayment([po]);
@@ -78,30 +124,38 @@ export default function App() {
   };
 
   const handleProcess = async () => {
+    if (busyRef.current) return;
     if (poNew.length === 0) { push('PO_NEW is empty — nothing to process', 'ok'); return; }
-    const res = await api.sendPayments();
-    if (res?.ok) {
-      const ext = res.data?.sent ?? 0;
-      const int_ = res.data?.internal ?? 0;
-      const parts = [];
-      if (ext > 0) parts.push(`${ext} sent to clearing bank`);
-      if (int_ > 0) parts.push(`${int_} internal`);
-      push(parts.length ? parts.join(', ') : 'No POs processed', 'ok');
-    } else {
-      push(res?.message ?? 'Error sending payments', 'err');
-    }
-    refresh();
+    setAllBusy(true);
+    try {
+      const res = await api.sendPayments();
+      if (res?.ok) {
+        const ext  = res.data?.sent     ?? 0;
+        const int_ = res.data?.internal ?? 0;
+        const parts = [];
+        if (ext  > 0) parts.push(`${ext} sent to clearing bank`);
+        if (int_ > 0) parts.push(`${int_} internal`);
+        push(parts.length ? parts.join(', ') : 'No POs processed', 'ok');
+      } else {
+        push(res?.message ?? 'Error sending payments', 'err');
+      }
+      refresh();
+    } finally { setAllBusy(false); }
   };
 
-  const handleSendAcks = async () => {
-    const res = await api.sendAcknowledgements();
-    if (res?.ok) {
-      const n = res.data?.sent ?? 0;
-      push(n > 0 ? `${n} ACKs sent to clearing bank` : 'No pending ACKs to send', 'ok');
-    } else {
-      push(res?.message ?? 'Error sending ACKs', 'err');
-    }
-    refresh();
+  const handlePollCbAcks = async () => {
+    if (busyRef.current) return;
+    setAllBusy(true);
+    try {
+      const res = await api.pollCbAcks();
+      if (res?.ok) {
+        const n = res.data?.received ?? 0;
+        push(n > 0 ? `${n} ACKs ontvangen van CB` : 'Geen nieuwe ACKs bij CB', 'ok');
+        if (n > 0) refresh();
+      } else {
+        push(res?.message ?? 'Fout bij pollen ACKs', 'err');
+      }
+    } finally { setAllBusy(false); }
   };
 
   const counts = {
@@ -123,10 +177,9 @@ export default function App() {
           <Dashboard
             poNew={poNew} poOut={poOut} poIn={poIn} txs={txs} accounts={accounts}
             bankInfo={bankInfo}
+            autoLastRun={autoLastRun}
+            busy={busy}
             onOpenPo={(po, kind) => setOpenPo({ po, kind })}
-            onNew={() => setShowNew(true)}
-            onProcess={handleProcess}
-            onSendAcks={handleSendAcks}
           />
         )}
         {route === 'accounts' && <Accounts accounts={accounts} />}
@@ -136,15 +189,21 @@ export default function App() {
             onOpenPo={(po, kind) => setOpenPo({ po, kind })}
             onNew={() => setShowNew(true)}
             onProcess={handleProcess}
+            onPollCb={handlePollCb}
+            onPollCbAcks={handlePollCbAcks}
+            busy={busy}
           />
         )}
         {route === 'ack' && <Acknowledgements ackIn={ackIn} ackOut={ackOut} />}
-        {route === 'tx'  && <Transactions txs={txs} />}
+        {route === 'tx'  && <Transactions txs={txs} onOpenTx={tx => setOpenTx(tx)} />}
         {route === 'log' && <Log logs={logs} />}
       </div>
 
       {openPo && (
         <PoDrawer po={openPo.po} kind={openPo.kind} onClose={() => setOpenPo(null)} />
+      )}
+      {openTx && (
+        <TxDrawer tx={openTx} onClose={() => setOpenTx(null)} />
       )}
       {showNew && (
         <NewPoModal

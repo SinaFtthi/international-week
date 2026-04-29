@@ -1,0 +1,17 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: pingfin-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: pingfin
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./src/db/init.sql:/docker-entrypoint-initdb.d/01_init_a.sql:ro
+      - ./src/db/init_b.sql:/docker-entrypoint-initdb.d/02_init_b.sql:ro
+
+volumes:
+  mysql_data:

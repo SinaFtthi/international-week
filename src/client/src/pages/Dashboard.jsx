@@ -1,9 +1,8 @@
 import { Kpi } from '../components/Kpi';
-import { Pill, CodePill } from '../components/Pill';
-import { Icons } from '../lib/icons';
+import { Pill } from '../components/Pill';
 import { fmt, poOutState, poInState } from '../lib/fmt';
 
-export function Dashboard({ poNew, poOut, poIn, txs, accounts, bankInfo, onOpenPo, onNew, onProcess, onSendAcks }) {
+export function Dashboard({ poNew, poOut, poIn, txs, accounts, bankInfo, autoLastRun, busy, onOpenPo }) {
   const totalBal = accounts.reduce((s, a) => s + parseFloat(a.balance ?? 0), 0);
   const failed   = poOut.filter(p => poOutState(p) === 'failed').length;
   const awaiting = poOut.filter(p => poOutState(p) === 'awaiting_ack').length + poNew.length;
@@ -13,17 +12,23 @@ export function Dashboard({ poNew, poOut, poIn, txs, accounts, bankInfo, onOpenP
     .sort((a, b) => (b.ob_datetime || b.po_datetime || '').localeCompare(a.ob_datetime || a.po_datetime || ''))
     .slice(0, 6);
 
+  const autoStatus = busy
+    ? { color: 'var(--brand)', text: '⚙ verwerken…' }
+    : autoLastRun
+      ? { color: 'var(--ok)',   text: `✓ auto · ${autoLastRun.toLocaleTimeString()}` }
+      : { color: 'var(--ink-3)', text: 'wacht op eerste cyclus…' };
+
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1 className="page-title">Dashboard</h1>
-          <div className="page-sub">Operations overview · {bankInfo?.bank_name} · {bankInfo?.bank_bic}</div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn" onClick={onSendAcks}>{Icons.ack(14)} Send ACKs</button>
-          <button className="btn" onClick={onProcess}>{Icons.play(14)} Process PO_NEW</button>
-          <button className="btn btn-primary" onClick={onNew}>{Icons.plus(14)} New payment order</button>
+          <div className="page-sub">
+            Operations overview · {bankInfo?.bank_name} · {bankInfo?.bank_bic}
+            <span style={{ marginLeft: 12, fontSize: 12, color: autoStatus.color }}>
+              {autoStatus.text}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -130,12 +135,12 @@ export function Dashboard({ poNew, poOut, poIn, txs, accounts, bankInfo, onOpenP
 function StatePill({ state }) {
   if (!state) return null;
   const map = {
-    completed:   ['ok',   'completed'],
-    awaiting_ack:['warn', 'awaiting ACK'],
-    pending_ack: ['warn', 'to ack'],
-    failed:      ['err',  'failed'],
-    rejected:    ['err',  'rejected'],
-    pending:     ['warn', 'pending'],
+    completed:    ['ok',   'completed'],
+    awaiting_ack: ['warn', 'awaiting ACK'],
+    pending_ack:  ['warn', 'to ack'],
+    failed:       ['err',  'failed'],
+    rejected:     ['err',  'rejected'],
+    pending:      ['warn', 'pending'],
   };
   const [kind, label] = map[state] ?? ['info', state];
   return <Pill kind={kind}>{label}</Pill>;
