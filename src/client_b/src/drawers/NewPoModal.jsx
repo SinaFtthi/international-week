@@ -22,10 +22,6 @@ export function NewPoModal({ accounts, bankInfo, onClose, onCreate }) {
     if (!bb) { setErr('Enter a beneficiary bank BIC.'); return; }
     const baClean = ba.replace(/\s+/g, '').toUpperCase();
     if (!baClean) { setErr('Enter a beneficiary account IBAN.'); return; }
-    if (!baClean.startsWith('BE') || baClean.length !== 14) {
-      setErr('Beneficiary account must start with BE and be exactly 14 characters (e.g. BE00111111111111).');
-      return;
-    }
     if (isNaN(n) || n <= 0) { setErr('Amount must be positive.'); return; }
     if (n > 500) { setErr('Max 500 EUR per transaction.'); return; }
     if (!/^\d+(\.\d{1,2})?$/.test(String(n))) { setErr('Max 2 decimal places.'); return; }

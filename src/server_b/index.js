@@ -8,13 +8,13 @@ const PORT = process.env.PORT || 3001;
 app.use(express.json());
 
 // ─────────────────────────────────────────────────────────────
-// CONFIG  ← pas dit aan
+// CONFIG  — waarden komen uit .env of docker-compose environment
 // ─────────────────────────────────────────────────────────────
-const BANK_BIC = 'DNIBBE21';
-const BANK_NAME = 'Bank B';
-const TOKEN     = 'Pingfin9';
-const CB_TOKEN = 'oO5YVfXm8Yb3v941D0stAvmK0CK4uFAf';                             // ← jullie token van de echte CB
-const CB_URL    = 'https://stevenop.be/pingfin/api/v2';   // ← echte clearing bank
+const BANK_BIC  = process.env.BANK_BIC  || 'BKCHBEBB';
+const BANK_NAME = process.env.BANK_NAME || 'Bank B';
+const TOKEN     = process.env.TOKEN     || 'Pingfin9';
+const CB_TOKEN = process.env.CB_TOKEN || 'HBUaYlV0R8v6Oa9lhd8k2FbvEaPn1MgT';
+const CB_URL    = process.env.CB_URL    || 'https://stevenop.be/pingfin/api/v2';
 
 // ─────────────────────────────────────────────────────────────
 // DATABASE  (zelfde gegevens als jullie originele code)
@@ -557,6 +557,7 @@ app.post('/api/send_acknowledgements/', auth, async (req, res) => {
 
     if (cbRes.ok) {
       for (const ack of acks) {
+        await db.query('DELETE FROM ack_out WHERE po_id = ?', [ack.po_id]);
         await addLog('ack_out_process', `ACK doorgestuurd naar CB`, ack);
       }
     }
@@ -617,7 +618,7 @@ app.post('/api/poll_cb_acks/', auth, async (req, res) => {
         );
 
         await db.query(
-          'UPDATE transactions SET iscomplete = ? WHERE po_id = ?',
+          'UPDATE transactions SET iscomplete = 1, isvalid = ? WHERE po_id = ?',
           [success ? 1 : 0, ack.po_id]
         );
 
@@ -627,6 +628,12 @@ app.post('/api/poll_cb_acks/', auth, async (req, res) => {
             [ack.po_amount, ack.oa_id]
           );
           console.log(`     💸 Saldo van ${ack.oa_id} verlaagd met €${ack.po_amount}`);
+        } else if (!success && ack.oa_id) {
+          await db.query(
+            'UPDATE accounts SET balance = balance + ? WHERE id = ?',
+            [ack.po_amount, ack.oa_id]
+          );
+          console.log(`     💰 Refund €${ack.po_amount} naar ${ack.oa_id} (ACK mislukt)`);
         }
 
         // ACK verwerkt → verwijder uit ack_in (staat nu als transactie)

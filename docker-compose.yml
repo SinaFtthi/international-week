@@ -31,6 +31,11 @@ services:
       DB_USER:     root
       DB_PASSWORD: root
       DB_NAME:     pingfin
+      BANK_BIC:    DNIBBE21
+      BANK_NAME:   Best Bank
+      TOKEN:       Pingfin9
+      CB_TOKEN:    K36JSzpQ4jGwbbLOffEebiJ2dsQqfhHT
+      CB_URL:      https://stevenop.be/pingfin/api/v2
     depends_on:
       db:
         condition: service_healthy
@@ -48,6 +53,11 @@ services:
       DB_USER:     root
       DB_PASSWORD: root
       DB_NAME:     bankb
+      BANK_BIC:    BKCHBEBB
+      BANK_NAME:   Bank B
+      TOKEN:       Pingfin9
+      CB_TOKEN:    HBUaYlV0R8v6Oa9lhd8k2FbvEaPn1MgT
+      CB_URL:      https://stevenop.be/pingfin/api/v2
     depends_on:
       db:
         condition: service_healthy

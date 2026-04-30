@@ -8,13 +8,13 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // ─────────────────────────────────────────────────────────────
-// CONFIG  ← pas dit aan
+// CONFIG  — waarden komen uit .env of docker-compose environment
 // ─────────────────────────────────────────────────────────────
-const BANK_BIC = 'BKCHBEBB';
-const BANK_NAME = 'Best Bank';
-const TOKEN     = 'Pingfin9';                              // ← jullie token, geef dit aan de CB
-const CB_TOKEN = 'OTFIAPFKeI9mjSZp64doDwVt7b6u4GUc';                          // ← krijg je van de CB
-const CB_URL    = 'https://stevenop.be/pingfin/api/v2';   // ← verander naar echte CB URL
+const BANK_BIC  = process.env.BANK_BIC  || 'DNIBBE21';
+const BANK_NAME = process.env.BANK_NAME || 'Best Bank';
+const TOKEN     = process.env.TOKEN     || 'Pingfin9';
+const CB_TOKEN = process.env.CB_TOKEN || 'K36JSzpQ4jGwbbLOffEebiJ2dsQqfhHT';
+const CB_URL    = process.env.CB_URL    || 'https://stevenop.be/pingfin/api/v2';
 
 // ─────────────────────────────────────────────────────────────
 // DATABASE  (zelfde gegevens als jullie originele code)
@@ -565,6 +565,7 @@ app.post('/api/send_acknowledgements/', auth, async (req, res) => {
 
     if (cbRes.ok) {
       for (const ack of acks) {
+        await db.query('DELETE FROM ack_out WHERE po_id = ?', [ack.po_id]);
         await addLog('ack_out_process', `ACK doorgestuurd naar CB`, ack);
       }
     }
@@ -624,8 +625,10 @@ app.post('/api/poll_cb_acks/', auth, async (req, res) => {
            ack.bb_id ?? null, ack.ba_id ?? null, ack.bb_code ?? null, ack.bb_datetime ?? null]
         );
 
+        // iscomplete is altijd 1: de transactie is afgerond (succes of mislukking)
+        // isvalid blijft 1 als succes, anders 0 (wordt gezet bij INSERT in send_payments)
         await db.query(
-          'UPDATE transactions SET iscomplete = ? WHERE po_id = ?',
+          'UPDATE transactions SET iscomplete = 1, isvalid = ? WHERE po_id = ?',
           [success ? 1 : 0, ack.po_id]
         );
 
@@ -635,6 +638,13 @@ app.post('/api/poll_cb_acks/', auth, async (req, res) => {
             [ack.po_amount, ack.oa_id]
           );
           console.log(`     💸 Saldo van ${ack.oa_id} verlaagd met €${ack.po_amount}`);
+        } else if (!success && ack.oa_id) {
+          // Mislukt: geld terugstorten op OA
+          await db.query(
+            'UPDATE accounts SET balance = balance + ? WHERE id = ?',
+            [ack.po_amount, ack.oa_id]
+          );
+          console.log(`     💰 Refund €${ack.po_amount} naar ${ack.oa_id} (ACK mislukt)`);
         }
 
         // ACK verwerkt → verwijder uit ack_in (staat nu als transactie)
