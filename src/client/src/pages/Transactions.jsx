@@ -15,7 +15,7 @@ export function Transactions({ txs, onOpenTx }) {
       <div className="card">
         <table className="tbl">
           <thead><tr>
-            <th>id</th><th>datetime</th><th>account</th><th>po_id</th>
+            <th>id</th><th>datetime</th><th>from account</th><th>to account</th><th>po_id</th>
             <th>valid</th><th>complete</th><th style={{ textAlign: 'right' }}>amount</th>
           </tr></thead>
           <tbody>
@@ -24,6 +24,7 @@ export function Transactions({ txs, onOpenTx }) {
                 <td className="mono" style={{ fontSize: 12 }}>#{t.id}</td>
                 <td className="mono" style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmt.dt(t.datetime)}</td>
                 <td className="iban">{fmt.iban(t.account_id)}</td>
+                <td className="iban">{fmt.iban(t.ba_id) || '—'}</td>
                 <td className="mono" style={{ fontSize: 12 }}>{t.po_id}</td>
                 <td>{t.isvalid ? <Pill kind="ok">valid</Pill> : <Pill kind="err">invalid</Pill>}</td>
                 <td>{t.iscomplete ? <Pill kind="ok">complete</Pill> : <Pill kind="warn">pending</Pill>}</td>
@@ -32,7 +33,7 @@ export function Transactions({ txs, onOpenTx }) {
                 </td>
               </tr>
             ))}
-            {txs.length === 0 && <tr><td colSpan={7} className="empty">No transactions yet.</td></tr>}
+            {txs.length === 0 && <tr><td colSpan={8} className="empty">No transactions yet.</td></tr>}
           </tbody>
         </table>
       </div>

@@ -27,7 +27,7 @@ export function Log({ logs }) {
 
       <div className="card">
         <table className="tbl">
-          <thead><tr><th>id</th><th>datetime</th><th>type</th><th>message</th><th>po_id</th><th>code</th></tr></thead>
+          <thead><tr><th>id</th><th>datetime</th><th>type</th><th>message</th><th>po_id</th><th>to account</th><th>code</th></tr></thead>
           <tbody>
             {list.map(l => (
               <tr key={l.id}>
@@ -36,10 +36,11 @@ export function Log({ logs }) {
                 <td><span className="type-chip" data-t={l.type}>{l.type}</span></td>
                 <td style={{ fontSize: 13 }}>{l.message}</td>
                 <td className="mono" style={{ fontSize: 12, color: 'var(--ink-3)' }}>{l.po_id || '—'}</td>
+                <td className="iban" style={{ fontSize: 12 }}>{fmt.iban(l.ba_id) || '—'}</td>
                 <td><CodePill code={l.cb_code || l.bb_code || l.ob_code || null} /></td>
               </tr>
             ))}
-            {list.length === 0 && <tr><td colSpan={6} className="empty">No log entries.</td></tr>}
+            {list.length === 0 && <tr><td colSpan={7} className="empty">No log entries.</td></tr>}
           </tbody>
         </table>
       </div>

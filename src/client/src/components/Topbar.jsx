@@ -9,7 +9,7 @@ const titles = {
   log:       'Log',
 };
 
-export function Topbar({ route, onNew, bankInfo }) {
+export function Topbar({ route, onNew, bankInfo, user, onSettings, onLogout }) {
   return (
     <header className="topbar">
       <div>
@@ -23,7 +23,20 @@ export function Topbar({ route, onNew, bankInfo }) {
         <kbd>⌘K</kbd>
       </div>
       <button className="iconbtn" title="Notifications">{Icons.bell(16)}</button>
-      <button className="iconbtn" title="Settings">{Icons.cog(16)}</button>
+      <button className="iconbtn" title="Instellingen" onClick={onSettings}>{Icons.cog(16)}</button>
+      {user && (
+        <span style={{
+          fontSize: 12, fontWeight: 600, color: 'var(--ink-2)',
+          background: 'var(--hair)', borderRadius: 6, padding: '4px 10px',
+        }}>
+          {user.username}
+        </span>
+      )}
+      {user && (
+        <button className="btn" style={{ fontSize: 12 }} onClick={onLogout} title="Uitloggen">
+          Uitloggen
+        </button>
+      )}
       <button className="btn btn-primary" onClick={onNew}>
         {Icons.plus(14)} New PO
       </button>

@@ -1,5 +1,6 @@
 const express = require('express');
-const mysql = require('mysql2/promise');
+const mysql   = require('mysql2/promise');
+const crypto  = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -9,21 +10,21 @@ app.use(express.json());
 // ─────────────────────────────────────────────────────────────
 // CONFIG  ← pas dit aan
 // ─────────────────────────────────────────────────────────────
-const BANK_BIC = 'DIGEBEB2';
+const BANK_BIC = 'DNIBBE21';
 const BANK_NAME = 'Bank B';
 const TOKEN     = 'Pingfin9';
-const CB_TOKEN = 'yBWvx31xSma7viXvBAi3B28tG5W15hdT';                             // ← jullie token van de echte CB
+const CB_TOKEN = 'oO5YVfXm8Yb3v941D0stAvmK0CK4uFAf';                             // ← jullie token van de echte CB
 const CB_URL    = 'https://stevenop.be/pingfin/api/v2';   // ← echte clearing bank
 
 // ─────────────────────────────────────────────────────────────
 // DATABASE  (zelfde gegevens als jullie originele code)
 // ─────────────────────────────────────────────────────────────
 const db = mysql.createPool({
-  host: 'localhost',
-  port: 3307,
-  user: 'root',
-  password: 'root',
-  database: 'bankb',
+  host:     process.env.DB_HOST     || 'localhost',
+  port:     parseInt(process.env.DB_PORT || '3307'),
+  user:     process.env.DB_USER     || 'root',
+  password: process.env.DB_PASSWORD || 'root',
+  database: process.env.DB_NAME     || 'bankb',
   waitForConnections: true,
 });
 
@@ -59,7 +60,7 @@ async function addLog(type, message, po = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// AUTH MIDDLEWARE
+// AUTH MIDDLEWARE  (CB-facing: Bearer TOKEN)
 // ─────────────────────────────────────────────────────────────
 function auth(req, res, next) {
   const header = req.headers['authorization'];
@@ -70,12 +71,95 @@ function auth(req, res, next) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// SESSION AUTH  (UI-facing: X-Session-Token)
+// ─────────────────────────────────────────────────────────────
+const sessions    = new Map();
+const SESSION_TTL = 30 * 60 * 1000;
+
+function makeSessionToken() { return crypto.randomBytes(32).toString('hex'); }
+function hashPw(pw)          { return crypto.createHash('sha256').update(pw).digest('hex'); }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [t, s] of sessions) if (s.expiresAt < now) sessions.delete(t);
+}, 60_000);
+
+function sessionAuth(req, res, next) {
+  const token = req.headers['x-session-token'];
+  if (!token) return fail(res, 'Not logged in', 4011, 401);
+  const session = sessions.get(token);
+  if (!session || session.expiresAt < Date.now())
+    return fail(res, 'Session expired — log in again', 4012, 401);
+  session.expiresAt = Date.now() + SESSION_TTL;
+  req.session = session;
+  next();
+}
+
+// ─────────────────────────────────────────────────────────────
 // ROOT
 // ─────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({ message: 'PingFin server is running!' });
 });
 
+
+// ─────────────────────────────────────────────────────────────
+// AUTH ENDPOINTS
+// ─────────────────────────────────────────────────────────────
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body ?? {};
+    if (!username || !password) return fail(res, 'username and password required', 4000, 400);
+    const [[user]] = await db.query(
+      'SELECT id, username, role FROM users WHERE username = ? AND password_hash = ?',
+      [username, hashPw(password)]
+    );
+    if (!user) return fail(res, 'Ongeldige inloggegevens', 4013, 401);
+    const token = makeSessionToken();
+    sessions.set(token, { userId: user.id, username: user.username, role: user.role, expiresAt: Date.now() + SESSION_TTL });
+    ok(res, { token, username: user.username, role: user.role });
+  } catch (err) { fail(res, err.message, 5000, 500); }
+});
+
+app.post('/api/auth/logout', sessionAuth, (req, res) => {
+  sessions.delete(req.headers['x-session-token']);
+  ok(res, null, 'Logged out');
+});
+
+app.get('/api/auth/me', sessionAuth, (req, res) => {
+  ok(res, { username: req.session.username, role: req.session.role });
+});
+
+// ─────────────────────────────────────────────────────────────
+// USER MANAGEMENT (admin only)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/users/', sessionAuth, async (req, res) => {
+  if (req.session.role !== 'admin') return fail(res, 'Forbidden', 4030, 403);
+  const [rows] = await db.query('SELECT id, username, role, created_at FROM users ORDER BY id');
+  ok(res, rows);
+});
+
+app.post('/api/users/', sessionAuth, async (req, res) => {
+  if (req.session.role !== 'admin') return fail(res, 'Forbidden', 4030, 403);
+  const { username, password, role = 'user' } = req.body ?? {};
+  if (!username || !password) return fail(res, 'username and password required', 4000, 400);
+  try {
+    await db.query('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
+      [username, hashPw(password), role]);
+    ok(res, null, 'User created');
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return fail(res, 'Username already exists', 4090, 409);
+    fail(res, err.message, 5000, 500);
+  }
+});
+
+app.delete('/api/users/:id', sessionAuth, async (req, res) => {
+  if (req.session.role !== 'admin') return fail(res, 'Forbidden', 4030, 403);
+  if (Number(req.params.id) === req.session.userId)
+    return fail(res, 'Cannot delete yourself', 4031, 400);
+  await db.query('DELETE FROM users WHERE id = ?', [req.params.id]);
+  ok(res, null, 'User deleted');
+});
 
 // ─────────────────────────────────────────────────────────────
 // PUBLIC ENDPOINTS (verplicht door PingFin)

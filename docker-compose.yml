@@ -1,17 +1,93 @@
 services:
-  mysql:
+
+  # ── MySQL ─────────────────────────────────────────────────────
+  db:
     image: mysql:8.0
-    container_name: pingfin-mysql
+    container_name: pingfin-db
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: pingfin
+      MYSQL_DATABASE: pingfin          # eerste DB; init_b.sql maakt bankb aan
     ports:
-      - "3307:3306"
+      - "3307:3306"                    # optioneel: toegang via lokale client op poort 3307
     volumes:
       - mysql_data:/var/lib/mysql
       - ./src/db/init.sql:/docker-entrypoint-initdb.d/01_init_a.sql:ro
       - ./src/db/init_b.sql:/docker-entrypoint-initdb.d/02_init_b.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Bank A – server ───────────────────────────────────────────
+  server_a:
+    build: ./src/server
+    container_name: pingfin-server-a
+    restart: unless-stopped
+    environment:
+      DB_HOST:     db
+      DB_PORT:     3306
+      DB_USER:     root
+      DB_PASSWORD: root
+      DB_NAME:     pingfin
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3000"
+
+  # ── Bank B – server ───────────────────────────────────────────
+  server_b:
+    build: ./src/server_b
+    container_name: pingfin-server-b
+    restart: unless-stopped
+    environment:
+      DB_HOST:     db
+      DB_PORT:     3306
+      DB_USER:     root
+      DB_PASSWORD: root
+      DB_NAME:     bankb
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3001"
+
+  # ── Bank A – client (nginx + React build) ────────────────────
+  client_a:
+    build: ./src/client
+    container_name: pingfin-client-a
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - server_a
+
+  # ── Bank B – client (nginx + React build) ────────────────────
+  client_b:
+    build: ./src/client_b
+    container_name: pingfin-client-b
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      - server_b
+
+  # ── phpMyAdmin ────────────────────────────────────────────────
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: pingfin-phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST:          db
+      PMA_PORT:          3306
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "8080:80"
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   mysql_data:

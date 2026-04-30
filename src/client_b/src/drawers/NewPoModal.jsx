@@ -20,7 +20,12 @@ export function NewPoModal({ accounts, bankInfo, onClose, onCreate }) {
     const n = parseFloat(amt);
     if (!oa) { setErr('Select an originator account.'); return; }
     if (!bb) { setErr('Enter a beneficiary bank BIC.'); return; }
-    if (!ba) { setErr('Enter a beneficiary account IBAN.'); return; }
+    const baClean = ba.replace(/\s+/g, '').toUpperCase();
+    if (!baClean) { setErr('Enter a beneficiary account IBAN.'); return; }
+    if (!baClean.startsWith('BE') || baClean.length !== 14) {
+      setErr('Beneficiary account must start with BE and be exactly 14 characters (e.g. BE00111111111111).');
+      return;
+    }
     if (isNaN(n) || n <= 0) { setErr('Amount must be positive.'); return; }
     if (n > 500) { setErr('Max 500 EUR per transaction.'); return; }
     if (!/^\d+(\.\d{1,2})?$/.test(String(n))) { setErr('Max 2 decimal places.'); return; }
@@ -35,7 +40,7 @@ export function NewPoModal({ accounts, bankInfo, onClose, onCreate }) {
       po_datetime: now(),
       oa_id: oa,
       bb_id: bb.toUpperCase(),
-      ba_id: ba.replace(/\s+/g, ''),
+      ba_id: baClean,
     });
     onClose();
   };
